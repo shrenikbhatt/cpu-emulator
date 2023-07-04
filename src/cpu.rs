@@ -1,17 +1,25 @@
+#[allow(dead_code)]
+
 pub struct Cpu {
     registers: [u8; 16], // 16 registers
     memory: [u8; 0x1000], // 4 kiB memory
     program_counter: usize, // which memory address to access
+    stack: [u16; 16],
+    stack_pointer: usize,
 }
 
+#[allow(dead_code)]
 impl Cpu {
     pub fn new() -> Cpu {
         let registers: [u8; 16] = [0; 16];
         let memory: [u8; 0x1000] = [0; 0x1000];
+        let stack: [u16; 16] = [0; 16];
         Cpu {
             registers,
             memory,
             program_counter: 0,
+            stack,
+            stack_pointer: 0,
         }
     }
 
@@ -29,25 +37,27 @@ impl Cpu {
                 - 7: Mov value at register Y into register X
                 - 8: Mov value into register X
                 - 9: Jump to memory address specified by bits 11-0
+                - 10: Save current address to stack and jump to memory address specified by bits 11-0
+                - 11: Jump to address stored at top of stack
             - bits 11-8 represent register X
             - bits 7-4 represent register Y if operation involves 2 registers
             - bits 7-4 represent value if operation involves 1 register
             - bits 3-0 represent where to store result (register Z)
         */
-        let mut current_opcode: u16 = 0x0111;
+        let mut current_opcode: u16;
         while self.program_counter < (0x1000 - 1) {
             current_opcode = ((self.memory[self.program_counter] as u16) << 8) | (self.memory[self.program_counter + 1] as u16);
             if current_opcode == 0x0 { 
                 break;
             }
 
-            // println!("{:x}", current_opcode);
+            // println!("{:04x}", current_opcode);
             let opcode_parts: (u8, u8, u8, u8) = self.process_opcode(&current_opcode);
 
             // println!("{:?}", &opcode_parts);
 
             match opcode_parts {
-                (0, 1, 1, 1) => continue,
+                (0, 1, 1, 1) => (),
                 (1, _, _, _) => self.add_y_x(&opcode_parts.1, &opcode_parts.2, &opcode_parts.3),
                 (2, _, _, _) => self.add_x(&opcode_parts.1, &opcode_parts.2, &opcode_parts.3),
                 (3, _, _, _) => self.or_y_x(&opcode_parts.1, &opcode_parts.2, &opcode_parts.3),
@@ -56,7 +66,9 @@ impl Cpu {
                 (6, _, _, _) => self.and_x(&opcode_parts.1, &opcode_parts.2, &opcode_parts.3),
                 (7, _, _, _) => self.mov_y_x(&opcode_parts.1, &opcode_parts.2),
                 (8, _, _, _) => self.mov_x(&opcode_parts.1, &opcode_parts.2),
-                (9, _, _, _) => self.jump(&opcode_parts.1, &opcode_parts.2, &opcode_parts.3),
+                (9, _, _, _) => {self.jump(&opcode_parts.1, &opcode_parts.2, &opcode_parts.3); continue;},
+                (10, _, _, _) => {self.call(&opcode_parts.1, &opcode_parts.2, &opcode_parts.3); continue;},
+                (11, _, _, _) => self.ret(),
                 (_, _, _, _) => println!("Not implemented"),
             }
             self.program_counter += 2; // memory holds u8 but opcode is u16
@@ -113,6 +125,20 @@ impl Cpu {
     fn jump(&mut self, address_part_1: &u8, address_part_2: &u8, address_part_3: &u8) {
         let address: u16 = (((*address_part_1 as u16) << 8) | ((*address_part_2 as u16) << 4)) | (*address_part_3 as u16);
         self.program_counter = address as usize;
+    }
+
+    // todo: add stack overflow check
+    fn call(&mut self, address_part_1: &u8, address_part_2: &u8, address_part_3: &u8) {
+        self.stack[self.stack_pointer] = self.program_counter as u16;
+        self.stack_pointer += 1;
+
+        self.jump(address_part_1, address_part_2, address_part_3);
+    }
+
+    // todo: add stack underflow check
+    fn ret(&mut self) {
+        self.stack_pointer -= 1;
+        self.program_counter = self.stack[self.stack_pointer] as usize;
     }
 }
 
@@ -236,5 +262,33 @@ mod tests {
         cpu.run();
 
         assert_eq!(cpu.program_counter, 0x28);
+    }
+
+    #[test]
+    fn test_fn_call_and_ret() {
+        let mut cpu: Cpu = Cpu::new();
+        cpu.registers[0] = 3;
+        cpu.registers[1] = 4;
+
+        // Call function at address 0x100
+        cpu.memory[0] = 0x01;
+        cpu.memory[1] = 0x11;
+        cpu.memory[2] = 0xA1;
+        cpu.memory[3] = 0x00;
+
+        // terminate
+        cpu.memory[4] = 0x00;
+        cpu.memory[5] = 0x00;
+
+        // fn to add registers 0 and 1 loaded into hex address 0x100 in memory
+        cpu.memory[0x100] = 0x10;
+        cpu.memory[0x101] = 0x12;
+        cpu.memory[0x102] = 0xB0;
+        cpu.memory[0x103] = 0x00;
+
+        cpu.run();
+
+        assert_eq!(cpu.registers[2], 7);
+        assert_eq!(cpu.program_counter,  4);
     }
 }
